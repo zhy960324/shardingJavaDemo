@@ -6,7 +6,7 @@ spring:
   druid:
     datasource:
       type: com.alibaba.druid.pool.DruidDataSource
-      url: jdbc:mysql://192.168.4.71:3307/sharding2020?useUnicode=true&characterEncoding=UTF-8&useSSL=false&serverTimezone=Asia/Shanghai
+      url: jdbc:mysql://192.168.4.71:3307/sharding_carPark?useUnicode=true&characterEncoding=UTF-8&useSSL=false&serverTimezone=Asia/Shanghai
       driver-class-name: com.mysql.jdbc.Driver
       username: root
       password: 123456
@@ -20,13 +20,29 @@ spring:
       testWhileIdle: true
       testOnBorrow: false
       testOnReturn: false
+      #是否缓存preparedStatement，也就是PSCache。在mysql下建议关闭。 PSCache对支持游标的数据库性能提升巨大，比如说oracle。
       poolPreparedStatements: false
+      #要启用PSCache，-1为关闭 必须配置大于0，当大于0时，poolPreparedStatements自动触发修改为true  可以把这个数值配置大一些，比如说100
       maxOpenPreparedStatements: -1
+      #配置监控统计拦截的filters，去掉后监控界面sql无法统计，'wall'用于防火墙
       filters: stat,wall,log4j2
+      #通过connectProperties属性来打开mergeSql功能；慢SQL记录
       connectionProperties: druid.stat.mergeSql=true;druid.stat.slowSqlMillis=5000
+      #合并多个DruidDataSource的监控数据
       useGlobalDataSourceStat: true
       loginUsername: druid
       loginPassword: druid
+  redis:
+    database: 1
+    host: 192.168.4.71
+    port: 6379
+    password: 123456
+    jedis:
+      pool:
+        max-active: 8
+        max-wait: -1
+        max-idle: 8
+        min-idle: 0
 logging:
   level:
     com.example.demo: debug

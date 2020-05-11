@@ -4,17 +4,23 @@ import com.alibaba.druid.filter.Filter;
 import com.alibaba.druid.filter.logging.Slf4jLogFilter;
 import com.alibaba.druid.filter.stat.StatFilter;
 import com.alibaba.druid.pool.DruidDataSource;
+import com.alibaba.druid.util.StringUtils;
 import com.alibaba.druid.wall.WallConfig;
 import com.alibaba.druid.wall.WallFilter;
 import com.example.demo.config.datasource.DataSourceProperties;
+import com.example.demo.config.redis.RedisConfig;
+import com.example.demo.config.redis.RedisPrefixEnum;
 import org.apache.shardingsphere.api.config.sharding.ShardingRuleConfiguration;
 import org.apache.shardingsphere.api.config.sharding.TableRuleConfiguration;
 import org.apache.shardingsphere.api.config.sharding.strategy.StandardShardingStrategyConfiguration;
-import org.apache.shardingsphere.shardingjdbc.api.ShardingDataSourceFactory;
+import org.apache.shardingsphere.orchestration.config.OrchestrationConfiguration;
+import org.apache.shardingsphere.orchestration.reg.api.RegistryCenterConfiguration;
+import org.apache.shardingsphere.shardingjdbc.orchestration.api.OrchestrationShardingDataSourceFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.data.redis.core.RedisTemplate;
 
 import javax.sql.DataSource;
 import java.sql.SQLException;
@@ -28,8 +34,13 @@ import java.util.*;
  * @date 2020/5/910:23
  */
 @Configuration
-@AutoConfigureAfter(DataSourceProperties.class)
+@AutoConfigureAfter({DataSourceProperties.class, RedisConfig.class})
 public class ShardingRuleConfig {
+
+    private String defaultDataSource = DatasourceEnum.DEFAULT.getValue();
+
+    @Autowired
+    private RedisTemplate<String,Object> redisTemplate;
 
     @Autowired
     private DataSourceProperties properties;
@@ -49,7 +60,7 @@ public class ShardingRuleConfig {
         //多数据源配置
         //数据源1
         DruidDataSource dataSource0 = druidDataSource();
-        dataSourceMap.put("ds0", dataSource0);
+        dataSourceMap.put(defaultDataSource, dataSource0);
         //数据源2
 //        DruidDataSource dataSource1 = createDb1();
 //        dataSourceMap.put("ds1", dataSource1);
@@ -66,9 +77,11 @@ public class ShardingRuleConfig {
         Properties p = new Properties();
         //打印sql语句，生产环境关闭
         p.setProperty("sql.show",Boolean.TRUE.toString());
-        // 获取数据源对象
-        DataSource dataSource = ShardingDataSourceFactory.createDataSource(dataSourceMap, shardingRuleConfig, p);
-        return dataSource;
+        OrchestrationConfiguration orchestrationConfig = new OrchestrationConfiguration(
+                "orchestration-sharding-data-source", new RegistryCenterConfiguration("shardingLocalRegisterCenter"),
+                false);
+        return OrchestrationShardingDataSourceFactory.createDataSource(dataSourceMap, shardingRuleConfig, p,
+                orchestrationConfig);
     }
 
     /**
@@ -80,19 +93,41 @@ public class ShardingRuleConfig {
      * @date 2020/5/7 10:28
      */
     private TableRuleConfiguration orderRuleConfig(){
-        /** 分表规则，第一个参数logicTable 是逻辑表表名，逻辑表和真实的数据结构表，具有相同的数据结构，
-            第二个参数actualDataNodes 指的是物理表的范围，这里的意思就是 t_order_0 到 t_order_1的3张真实表
-            每次查询mapper文件里写的sql语句实际查询就只需要指向逻辑表，
-            例如我这里的写法 select * from t_order 实际上sharding jdbc 会去查询t_order_0 到 t_order_1的3张真实表数据
-         */
-        TableRuleConfiguration tableRuleConfig = new TableRuleConfiguration("t_order","ds0.t_order_${0..1}");
-        //分库策略
-        //tableRuleConfig.setDatabaseShardingStrategyConfig(new InlineShardingStrategyConfiguration("city_id", "ds${city_id % 2}"));
+        String logicTable = ShardingTableEnum.ORDER.getValue();
+        String orderNodesByRedisCarPark = getActualDataNodesByCatalog(ShardingTableEnum.ORDER);
+        //t_order_default 这张表是默认表，需要事先建好，防止首次启动报错
+        String actualDataNodes = StringUtils.isEmpty(orderNodesByRedisCarPark) ? "ds0.t_order_default" : orderNodesByRedisCarPark;
+        TableRuleConfiguration tableRuleConfig = new TableRuleConfiguration(logicTable,actualDataNodes);
         //设置分表策略
         tableRuleConfig.setTableShardingStrategyConfig(new StandardShardingStrategyConfiguration("car_park_id",new CarParkShardingTableAlgorithm()));
+        //根据时间将策略放进redis中,方便读取替换
+        redisTemplate.opsForZSet().add(RedisPrefixEnum.SHARDING_RULE_ORDER.getValue(),actualDataNodes,new Date().getTime());
         return tableRuleConfig;
     }
 
+
+    /**
+      * 根据分表类型获取初始化actualDataNodes
+      * @param logicTable
+      * @throws
+      * @return java.lang.String
+      * @author zhy
+      * @date 2020/5/11 14:52
+      */
+    public String getActualDataNodesByCatalog(ShardingTableEnum logicTable){
+        String redisKey = RedisPrefixEnum.CAR_PARK_ID_CATALOG.getValue();
+        //获取所有的停车场
+        Set<Object> keys = redisTemplate.opsForHash().keys(redisKey);
+        if (keys.isEmpty()){
+            return null;
+        }
+        StringBuilder sb = new StringBuilder();
+        keys.forEach(obj -> {
+            sb.append(defaultDataSource).append(".").append(logicTable.getValue()).append("_").append(obj.toString()).append(",");
+        });
+        sb.deleteCharAt(sb.length() - 1);
+        return sb.toString();
+    }
 
     /**
      * 获取druid数据库链接
